@@ -130,16 +130,16 @@ func main() {
 	}
 	defer c.Close()
 	glog.Infof("Start listening on port: %s, local address: %s socket: %+v", port, c.LocalAddr().Network(), syscall.ETH_P_ALL)
-//	filter, err := lldpFilter()
-//	if err != nil {
-//		glog.Errorf("failed to build bpf filter with error: %+v", err)
-//		os.Exit(1)
-//	}
-//	glog.Infof("resulting bpf filter: %+v", filter)
-//	if err := c.SetBPF(filter); err != nil {
-//		glog.Errorf("failed to attach bpf filter with error: %+v", err)
-//		os.Exit(1)
-//	}
+	filter, err := lldpFilter()
+	if err != nil {
+		glog.Errorf("failed to build bpf filter with error: %+v", err)
+		os.Exit(1)
+	}
+	glog.Infof("resulting bpf filter: %+v", filter)
+	if err := c.SetBPF(filter); err != nil {
+		glog.Errorf("failed to attach bpf filter with error: %+v", err)
+		os.Exit(1)
+	}
 	if err := c.SetPromiscuous(true); err != nil {
 		glog.Errorf("failed to set promiscuous mode with error: %+v", err)
 		os.Exit(1)
