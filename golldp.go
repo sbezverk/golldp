@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang/glog"
@@ -31,6 +32,7 @@ type LLDPtlv interface {
 type LLDPpacket interface {
 	GetNeighborID() []byte
 	GetTLV() []TLV
+	GetEtherType() uint16
 }
 
 // TLV defines LLDP tlv structure
@@ -58,6 +60,10 @@ type lldpPacket struct {
 
 func (p *lldpPacket) GetNeighborID() []byte {
 	return p.frame.Source
+}
+
+func (p *lldpPacket) GetEtherType() uint16 {
+	return uint16(p.frame.EtherType)
 }
 
 func (p *lldpPacket) GetTLV() []TLV {
@@ -117,13 +123,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	c, err := raw.ListenPacket(l, 0x88cc, &raw.Config{})
+	c, err := raw.ListenPacket(l, syscall.ETH_P_ALL, &raw.Config{})
 	if err != nil {
 		glog.Errorf("failed to listen for lldp connection with error: %+v", err)
 		os.Exit(1)
 	}
 	defer c.Close()
-	glog.Infof("Start listening on port: %s, local address: %s", port, c.LocalAddr().Network())
+	glog.Infof("Start listening on port: %s, local address: %s socket: %+v", port, c.LocalAddr().Network(), syscall.ETH_P_ALL)
+//	filter, err := lldpFilter()
+//	if err != nil {
+//		glog.Errorf("failed to build bpf filter with error: %+v", err)
+//		os.Exit(1)
+//	}
+//	glog.Infof("resulting bpf filter: %+v", filter)
+//	if err := c.SetBPF(filter); err != nil {
+//		glog.Errorf("failed to attach bpf filter with error: %+v", err)
+//		os.Exit(1)
+//	}
+	if err := c.SetPromiscuous(true); err != nil {
+		glog.Errorf("failed to set promiscuous mode with error: %+v", err)
+		os.Exit(1)
+	}
+	if err := c.SetReadDeadline(time.Now().Add(time.Second * 120)); err != nil {
+		glog.Errorf("failed to set Read Deadline timer with error: %+v", err)
+		os.Exit(1)
+	}
 	// f := &ethernet.Frame{
 	// 	Destination: []byte{0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e},
 	// 	EtherType:   0x88cc,
@@ -136,79 +160,65 @@ func main() {
 	// }
 	// c.WriteTo(b, &raw.Addr{HardwareAddr: []byte{0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e}})
 	p := make([]byte, 9000)
-	filter, err := lldpFilter()
-	if err != nil {
-		glog.Errorf("failed to build bpf filter with error: %+v", err)
-		os.Exit(1)
-	}
-	glog.Infof("resulting bpf filter: %+v", filter)
-	if err := c.SetBPF(filter); err != nil {
-		glog.Errorf("failed to attach bpf filter with error: %+v", err)
-		os.Exit(1)
-	}
-	if err := c.SetPromiscuous(true); err != nil {
-		glog.Errorf("failed to set promiscuous mode with error: %+v", err)
-		os.Exit(1)
-	}
-	if err := c.SetReadDeadline(time.Now().Add(time.Second * 120)); err != nil {
-		glog.Errorf("failed to set Read Deadline timer with error: %+v", err)
-		os.Exit(1)
-	}
-	n, a, err := c.ReadFrom(p)
-	if err != nil {
-		glog.Errorf("failed to Receive LLDP frame with error: %+v", err)
-		os.Exit(1)
-	}
-	glog.Infof("recevied lldp packet from: %s number of bytes: %d", a.String(), n)
-	r, err := NewLLDPpacket(p[:n])
-	if err != nil {
-		glog.Errorf("failed to Unmarshal frame with error: %+v", err)
-		os.Exit(1)
-	}
-	glog.Infof("lldp packet from neighbor: %+v", r.GetNeighborID())
+	for {
+		n, a, err := c.ReadFrom(p)
+		if err != nil {
+			glog.Errorf("failed to Receive LLDP frame with error: %+v", err)
+			os.Exit(1)
+		}
+		glog.Infof("recevied lldp packet from: %s number of bytes: %d", a.String(), n)
+		r, err := NewLLDPpacket(p[:n])
+		if err != nil {
+			glog.Errorf("failed to Unmarshal frame with error: %+v", err)
+			os.Exit(1)
+		}
+		glog.Infof("Received packet of EtherType: 0x%04x", r.GetEtherType())
+		if r.GetEtherType() == 0x88cc {
+			glog.Infof("lldp packet from neighbor: %+v", r.GetNeighborID())
 
-	tlvs := r.GetTLV()
+			tlvs := r.GetTLV()
 
-	for _, tlv := range tlvs {
-		switch tlv.t {
-		case 0:
-			glog.Infof("TLV type: %d, End of LLDP datagram", tlv.t)
-		case 1:
-			glog.Infof("TLV type: %d, Chassis type: %d id: %s", tlv.t, tlv.v[0], tools.MessageHex(tlv.v[1:]))
-		case 2:
-			glog.Infof("TLV type: %d, Port type: %d id: %s", tlv.t, tlv.v[0], tools.MessageHex(tlv.v[1:]))
-		case 3:
-			glog.Infof("TLV type: %d, Time to Live: %d", tlv.t, binary.BigEndian.Uint16(tlv.v))
-		case 4:
-			glog.Infof("TLV type: %d, Port description: %s", tlv.t, string(tlv.v))
-		case 5:
-			glog.Infof("TLV type: %d, System name: %s", tlv.t, string(tlv.v))
-		case 6:
-			glog.Infof("TLV type: %d, System description: %s", tlv.t, string(tlv.v))
-		case 7:
-			sc := parseLLDPcapabilities(tlv.v[:2])
-			ec := parseLLDPcapabilities(tlv.v[2:])
-			glog.Infof("TLV type: %d, System Capabilities: %s Enabled Capabilities: %s", tlv.t, strings.Join(sc, ", "), strings.Join(ec, ", "))
-		case 8:
-			al := tlv.v[0] - 1
-			st := tlv.v[1]
-			addr := make([]byte, al)
-			copy(addr, tlv.v[2:2+al])
-			var saddr string
-			if al-1 == 4 {
-				saddr = net.IP(addr).To4().String()
-			} else {
-				saddr = net.IP(addr).To16().String()
+			for _, tlv := range tlvs {
+				switch tlv.t {
+				case 0:
+					glog.Infof("TLV type: %d, End of LLDP datagram", tlv.t)
+				case 1:
+					glog.Infof("TLV type: %d, Chassis type: %d id: %s", tlv.t, tlv.v[0], tools.MessageHex(tlv.v[1:]))
+				case 2:
+					glog.Infof("TLV type: %d, Port type: %d id: %s", tlv.t, tlv.v[0], tools.MessageHex(tlv.v[1:]))
+				case 3:
+					glog.Infof("TLV type: %d, Time to Live: %d", tlv.t, binary.BigEndian.Uint16(tlv.v))
+				case 4:
+					glog.Infof("TLV type: %d, Port description: %s", tlv.t, string(tlv.v))
+				case 5:
+					glog.Infof("TLV type: %d, System name: %s", tlv.t, string(tlv.v))
+				case 6:
+					glog.Infof("TLV type: %d, System description: %s", tlv.t, string(tlv.v))
+				case 7:
+					sc := parseLLDPcapabilities(tlv.v[:2])
+					ec := parseLLDPcapabilities(tlv.v[2:])
+					glog.Infof("TLV type: %d, System Capabilities: %s Enabled Capabilities: %s", tlv.t, strings.Join(sc, ", "), strings.Join(ec, ", "))
+				case 8:
+					al := tlv.v[0] - 1
+					st := tlv.v[1]
+					addr := make([]byte, al)
+					copy(addr, tlv.v[2:2+al])
+					var saddr string
+					if al-1 == 4 {
+						saddr = net.IP(addr).To4().String()
+					} else {
+						saddr = net.IP(addr).To16().String()
+					}
+					glog.Infof("TLV type: %d, Management address length: %d subtype: %d value: %s unknown: %s", tlv.t, al, st, saddr, tools.MessageHex(tlv.v[al+1:]))
+				case 127:
+					oui := tlv.v[0:3]
+					st := tlv.v[3]
+					glog.Infof("TLV type: %d, OUI: %02x-%02x-%02x Subtype: %d value: %s", tlv.t, oui[0], oui[1], oui[2], st, tools.MessageHex(tlv.v[4:]))
+				default:
+				}
 			}
-			glog.Infof("TLV type: %d, Management address length: %d subtype: %d value: %s unknown: %s", tlv.t, al, st, saddr, tools.MessageHex(tlv.v[al+1:]))
-		case 127:
-			oui := tlv.v[0:3]
-			st := tlv.v[3]
-			glog.Infof("TLV type: %d, OUI: %02x-%02x-%02x Subtype: %d value: %s", tlv.t, oui[0], oui[1], oui[2], st, tools.MessageHex(tlv.v[4:]))
-		default:
 		}
 	}
-
 }
 
 func parseLLDPcapabilities(b []byte) []string {
