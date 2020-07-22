@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/golang/glog"
 	"github.com/mdlayher/ethernet"
@@ -129,7 +128,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer c.Close()
-	glog.Infof("Start listening on port: %s, local address: %s socket: %+v", port, c.LocalAddr().Network(), syscall.ETH_P_ALL)
+	glog.Infof("Start listening on port: %s, local address: %s socket: %+v, Ctrl-C to stop", port, c.LocalAddr().Network(), syscall.ETH_P_ALL)
 	filter, err := lldpFilter()
 	if err != nil {
 		glog.Errorf("failed to build bpf filter with error: %+v", err)
@@ -144,10 +143,10 @@ func main() {
 		glog.Errorf("failed to set promiscuous mode with error: %+v", err)
 		os.Exit(1)
 	}
-	if err := c.SetReadDeadline(time.Now().Add(time.Second * 120)); err != nil {
-		glog.Errorf("failed to set Read Deadline timer with error: %+v", err)
-		os.Exit(1)
-	}
+	//	if err := c.SetReadDeadline(time.Now().Add(time.Second * 120)); err != nil {
+	//		glog.Errorf("failed to set Read Deadline timer with error: %+v", err)
+	//		os.Exit(1)
+	//	}
 	// f := &ethernet.Frame{
 	// 	Destination: []byte{0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e},
 	// 	EtherType:   0x88cc,
@@ -166,18 +165,16 @@ func main() {
 			glog.Errorf("failed to Receive LLDP frame with error: %+v", err)
 			os.Exit(1)
 		}
-		glog.Infof("recevied lldp packet from: %s number of bytes: %d", a.String(), n)
 		r, err := NewLLDPpacket(p[:n])
 		if err != nil {
 			glog.Errorf("failed to Unmarshal frame with error: %+v", err)
 			os.Exit(1)
 		}
-		glog.Infof("Received packet of EtherType: 0x%04x", r.GetEtherType())
+		glog.Infof("recevied packet of ether type: 0x%04x from: %s number of bytes: %d", r.GetEtherType(), a.String(), n)
+
 		if r.GetEtherType() == 0x88cc {
-			glog.Infof("lldp packet from neighbor: %+v", r.GetNeighborID())
-
+			glog.Infof("lldp packet from neighbor: %+v", net.HardwareAddr(r.GetNeighborID()).String())
 			tlvs := r.GetTLV()
-
 			for _, tlv := range tlvs {
 				switch tlv.t {
 				case 0:
